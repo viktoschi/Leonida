@@ -49,6 +49,7 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 import bink_index  # noqa: E402
 import gamedata_index  # noqa: E402
+from error_text import describe  # noqa: E402
 from file_mode import published_mode  # noqa: E402
 from replace_retry import replace as replace_retry  # noqa: E402
 import gamedata_xml  # noqa: E402
@@ -456,17 +457,17 @@ def main(argv=None):
     try:
         names = read_mount_lists(a.mount)
     except (OSError, ValueError) as error:
-        print(f"bink_names: error: {error}", file=sys.stderr)
+        print(f"bink_names: error: {describe(error)}", file=sys.stderr)
         return 1
     try:
         streams = load_streams(a.source, skip_report=a.out if a.out and os.path.isfile(a.out) else None)
     except (OSError, csv.Error, ValueError) as error:
-        print(f"bink_names: error: {a.source}: {error}", file=sys.stderr)
+        print(f"bink_names: error: {a.source}: {describe(error)}", file=sys.stderr)
         return 1
     try:
         pins = load_pins(a.pins)
     except (OSError, csv.Error, ValueError) as error:
-        print(f"bink_names: error: {a.pins}: {error}", file=sys.stderr)
+        print(f"bink_names: error: {a.pins}: {describe(error)}", file=sys.stderr)
         return 1
     try:
         rows, unmatched = name_streams(names, streams, pins, a.max_skip)
@@ -480,7 +481,7 @@ def main(argv=None):
         try:
             write(a.out, rows, unmatched, summary)
         except OSError as error:
-            print(f"bink_names: error: cannot write {a.out}: {error}", file=sys.stderr)
+            print(f"bink_names: error: cannot write {a.out}: {describe(error)}", file=sys.stderr)
             return 2
     print(f"{len(names)} list entries, {len(streams)} streams: "
           + ", ".join(f"{counts[c]} {c}" for c in CONFIDENCES)

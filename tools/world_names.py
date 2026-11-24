@@ -38,6 +38,7 @@ import tempfile
 
 # -I keeps the script directory off sys.path, so add it explicitly before importing the sibling module.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from error_text import describe  # noqa: E402
 from report_paths import same_report_path  # noqa: E402
 
 MASK32 = 0xFFFFFFFF
@@ -668,7 +669,7 @@ def main(argv=None) -> int:
     try:
         return args.func(args)
     except (OSError, ValueError, json.JSONDecodeError) as exc:
-        print(f"ERROR: {exc}", file=sys.stderr)
+        print(f"ERROR: {describe(exc)}", file=sys.stderr)
         return 1
 
 

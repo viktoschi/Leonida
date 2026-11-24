@@ -221,14 +221,19 @@ class TextureAssets(unittest.TestCase):
         self.build()
         row = self.row_after_export()
         original = self.folder / row["File"]
-        self.assertEqual(original.read_bytes()[:4], b"DDS ")
+        # The bytes, not the path: the third build supersedes this export, so complete_pool removes the file
+        # the row no longer names. Only what was read here outlives it.
+        original_bytes = original.read_bytes()
+        self.assertEqual(original_bytes[:4], b"DDS ")
         self.assertNotIn("BCPackLimitation", row)
         config["bc1"]["selectors"][0] = [mask ^ 1 for mask in config["bc1"]["selectors"][0]]
         profile.write_text(json.dumps(config), encoding="utf-8")
         self.build()
         updated = self.folder / self.row_after_export()["File"]
         self.assertNotEqual(updated, original)
-        self.assertNotEqual(updated.read_bytes(), original.read_bytes())
+        self.assertNotEqual(updated.read_bytes(), original_bytes)
+        # A superseded export is stored once: no row names the old file any more, so it is gone.
+        self.assertFalse(original.exists())
 
     @unittest.skipUnless(os.environ.get("RPF9DUMP_DLL"), "requires the built rpf9dump")
     def test_new_base_and_pack_pools(self):

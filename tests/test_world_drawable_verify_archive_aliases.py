@@ -66,7 +66,8 @@ class ArchiveAliasTests(unittest.TestCase):
         predictions, manifest = self.reports(self.archive, self.hard_link())
         result = subprocess.run(
             [sys.executable, "-I", str(ROOT / "tools" / "world_drawable_verify.py"),
-             str(predictions), str(manifest)], capture_output=True, text=True, encoding="utf-8")
+             str(predictions), str(manifest)], capture_output=True, text=True, encoding="utf-8",
+            errors="replace")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stderr, "")
         self.assert_confirmed(json.loads(result.stdout))

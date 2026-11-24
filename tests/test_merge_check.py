@@ -43,7 +43,7 @@ class MergeCheckTest(unittest.TestCase):
     def git(self, *args):
         r = subprocess.run(["git", "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
                             "-c", "commit.gpgsign=false", "-C", self.repo, *args],
-                           capture_output=True, encoding="utf-8")
+                           capture_output=True, encoding="utf-8", errors="replace")
         self.assertEqual(r.returncode, 0, r.stderr)
         return r.stdout.strip()
 

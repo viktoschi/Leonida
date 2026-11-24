@@ -170,7 +170,7 @@ class JsonBomInputTests(unittest.TestCase):
                 result = subprocess.run([
                     sys.executable, "-B", "-I", str(ROOT / "tools" / "feature_scan.py"),
                     str(carve.parent.parent),
-                ], capture_output=True, text=True, encoding="utf-8", timeout=30)
+                ], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30)
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertIn("uses_code_base by stage: {'ps': 1} of {'ps': 1}", result.stdout)
 

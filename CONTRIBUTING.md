@@ -43,6 +43,11 @@ for new third-party material document its source, version and applicable terms i
   `tools/report_paths.same_report_path(a, b)` rather than deriving the answer again: it resolves both paths,
   applies the volume's case rules and falls back to `os.path.samefile`, so a new tool reuses one answer
   instead of a private copy. `tests/test_report_paths.py` covers it.
+- A test that decodes the output of a child process names a replacement policy: `encoding="utf-8",
+  errors="replace"`. On a Windows host whose UI language is not English the child writes the localized Win32 text
+  in the ANSI code page, and a strict decode kills the reader thread, so `stdout` and `stderr` come back as `None`
+  and replace the real failure with a `TypeError`. Where the bytes are the subject, capture without `encoding=`
+  and compare `bytes`. `tests/test_child_output_decoding.py` fails for a capture that forgets the policy.
 - `tools/rpf9dump` needs the submodule: `git submodule update --init`.
 - A new shader-translator rule goes into the contract table in `docs/design.md`, with how it was confirmed: a GPU
   test, a Mesa/LLVM reference, or a count over the corpus.

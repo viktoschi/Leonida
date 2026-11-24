@@ -8,10 +8,16 @@ One raw kernel per wave size. Thread 0 seeds 64 dwords at byte 0x100 of the outp
 byte offset from 0x140, the "base" every load starts from; X is negative below it), then runs each load once and
 writes its destination SGPRs to out[0..]. Every load either reads inside the seeded 0x100..0x1ff bytes, or (for
 `s_buffer_load`) is clipped by a NUM_RECORDS of 0x100 bytes around the base, so no row can read outside the buffer
-whatever the hardware rule turns out to be. Rows the assembler rejects (a negative `s_buffer_load` IMM) are encoded
-by hand as `.long` words. Standard library only; no game files.
+whatever the hardware rule turns out to be. Standard library only; no game files.
 
-Exit codes: 0 every row matches the translator, 1 a mismatch, 2 harness error, 77 no hardware oracle.
+UNSUPPORTED lists the `s_buffer_load` encodings whose IMM has bit 20 set (a negative IMM, which the assembler rejects,
+written by hand as `.long` words). They are reported as unsupported and are never run or counted as a pass: on gfx1036
+such a load read data that is neither 0 nor the buffer's own words, and on gfx1030 it hangs the wave, so the kernel
+driver resets the compute ring and every row of that kernel reads back unwritten. No compiler emits the encoding and
+the translator does not model it (docs/design.md, Scalar/buffer memory).
+
+Exit codes: 0 every row matches the translator, 1 a mismatch, 2 harness error (including a destination that still
+holds the runner's unwritten-word sentinel: the kernel did not complete), 77 no hardware oracle.
 Usage: `python -I tools/smem_neg_probe.py --help` lists the options.
 """
 import argparse
@@ -40,7 +46,8 @@ def sbuf_raw(sdst, sbase, soff, imm):
 
 # (name, lines, destination SGPRs, sOFF value or None, translator rule -> list of region offsets X or None)
 #   s_load:        address = (base & ~3) + (sOFF & ~3) + sext21(IMM & ~3), 64-bit, no bound
-#   s_buffer_load: off = (sOFF & ~3) + (IMM & ~3) as a 32-bit value; dword i is 0 when off + 4i + 4 > NUM_RECORDS
+#   s_buffer_load: off = (sOFF & ~3) + (IMM & ~3), not wrapped at 32 bits (#1686); dword i is 0 when
+#                  off + 4i + 4 > NUM_RECORDS
 NUM_RECORDS = 0x100
 ROWS = [
     ("sload_imm_m4",        ["s_load_dword s40, s[4:5], -0x4"], [40], None, [-4]),
@@ -49,27 +56,35 @@ ROWS = [
     ("sload_soff6_imm_m1",  ["s_load_dword s43, s[4:5], s20 offset:-0x1"], [43], 6, [0]),
     ("sload_soffc_imm_m20", ["s_load_dword s44, s[4:5], s20 offset:-0x20"], [44], 0xC, [-0x14]),
     ("sload_x2_soff4_m10",  ["s_load_dwordx2 s[46:47], s[4:5], s20 offset:-0x10"], [46, 47], 4, [-0xC, -8]),
-    ("sbuf_imm_m4",         sbuf_raw(48, 12, 0x7D, -4), [48], None, None),     # soff 0x7d = null
-    ("sbuf_soff8_imm_m4",   sbuf_raw(49, 12, 20, -4), [49], 8, None),
     ("sbuf_soffm4_imm8",    ["s_buffer_load_dword s50, s[12:15], s20 offset:0x8"], [50], 0xFFFFFFFC, None),
     ("sbuf_soffm4",         ["s_buffer_load_dword s51, s[12:15], s20"], [51], 0xFFFFFFFC, None),
 ]
 
+# Encodings this probe does not run (see the module docstring): (name, lines, what is known). Kept so the report names
+# them and so a test can check that the kernel never contains them.
+UNSUPPORTED = [
+    ("sbuf_imm_m4", sbuf_raw(48, 12, 0x7D, -4),        # soff 0x7d = null
+     "s_buffer_load IMM -4 (bit 20 set): undefined data on gfx1036, hangs gfx1030"),
+    ("sbuf_soff8_imm_m4", sbuf_raw(49, 12, 20, -4),
+     "s_buffer_load sOFF 8 + IMM -4 (bit 20 set): undefined data on gfx1036, hangs gfx1030"),
+]
+
 
 def translator_sbuf(soff, imm):
-    """The translator's s_buffer_load rule: a 32-bit offset (IMM kept as written, sOFF as is), bound-checked."""
-    off = ((soff or 0) & ~3) + (imm & ~3)
-    off &= 0xFFFFFFFF
+    """The translator's s_buffer_load rule: zext(sOFF & ~3) + (IMM & ~3), bound-checked. The sum is not wrapped at
+    32 bits (since #1686, measured on gfx1036 and gfx1030): sOFF 0xfffffffc + IMM 8 is past NUM_RECORDS and reads 0,
+    not the dword at +4."""
+    off = ((soff or 0) & 0xFFFFFFFC) + (imm & ~3)
     return [off] if off + 4 <= NUM_RECORDS else [None]
 
 
 def expected():
     """Per row, the values the translator's rule gives (list of ints or None for 0)."""
     out = {}
-    imms = {"sbuf_imm_m4": -4 & 0x1FFFFF, "sbuf_soff8_imm_m4": -4 & 0x1FFFFF, "sbuf_soffm4_imm8": 8, "sbuf_soffm4": 0}
+    imms = {"sbuf_soffm4_imm8": 8, "sbuf_soffm4": 0}
     for name, _lines, regs, soff, xs in ROWS:
         if xs is None:
-            # the translator reads an s_buffer_load IMM as unsigned (llvm-mc's 20-bit field): -4 is 0x1ffffc
+            # the IMM as written (0 to 0xfffff); the encodings with bit 20 set are in UNSUPPORTED
             xs = translator_sbuf(soff, imms[name])
         out[name] = [seed(x) if x is not None else None for x in xs]
     return out
@@ -107,6 +122,7 @@ def main(argv=None):
     if a.oracle == "translator":
         for name, vals in want.items():
             print(f"{name:22} translator {' '.join('0' if v is None else hex(v) for v in vals)}")
+        report_unsupported()
         return 0
     import asm
     import runner
@@ -145,17 +161,36 @@ def main(argv=None):
         print(f"device: {oracle.device} ({oracle.arch})")
     finally:
         oracle.close()
-    bad, i = 0, 0
+    bad, unwritten, i = 0, 0, 0
     for name, _ls, regs, _soff, _xs in ROWS:
         w32 = got[32][i:i + len(regs)]
         w64 = got[64][i:i + len(regs)]
         i += len(regs)
         exp = [0 if v is None else v for v in want[name]]
-        ok = w32 == exp and w64 == exp
-        bad += not ok
         hw = " ".join(hex(v) for v in w32) + ("" if w32 == w64 else "  (wave64 " + " ".join(hex(v) for v in w64) + ")")
-        print(f"{name:22} hw {hw:26} translator {' '.join(hex(v) for v in exp):24} {'ok' if ok else 'DIFFERS'}")
+        if runner.SENTINEL in w32 + w64:
+            # The kernel stores every destination, so a sentinel means it did not complete (a fault or a reset):
+            # no measurement, and neither a match nor a mismatch.
+            unwritten += 1
+            verdict = "NOT WRITTEN"
+        elif w32 == exp and w64 == exp:
+            verdict = "ok"
+        else:
+            bad += 1
+            verdict = "DIFFERS"
+        print(f"{name:22} hw {hw:26} translator {' '.join(hex(v) for v in exp):24} {verdict}")
+    report_unsupported()
+    print(f"summary: {len(ROWS) - bad - unwritten} match, {bad} differ, {unwritten} not written, "
+          f"{len(UNSUPPORTED)} unsupported (not run)")
+    if unwritten:
+        print(f"the kernel did not write {unwritten} row(s): the run is incomplete, not a result")
+        return 2
     return 1 if bad else 0
+
+
+def report_unsupported():
+    for name, _lines, why in UNSUPPORTED:
+        print(f"{name:22} unsupported, not run: {why}")
 
 
 if __name__ == "__main__":

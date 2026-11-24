@@ -33,20 +33,39 @@ class SmemNegProbeTest(unittest.TestCase):
         self.assertEqual(p.translator_sbuf(0, 0), [0])
         self.assertEqual(p.translator_sbuf(0xFC, 0), [0xFC])
         self.assertEqual(p.translator_sbuf(0x100, 0), [None])
-        self.assertEqual(p.translator_sbuf(0xFFFFFFFC, 8), [4])
+        # No 32-bit wrap (#1686; gfx1036 and gfx1030 read 0 here): 0xfffffffc + 8 is past NUM_RECORDS, not +4.
+        self.assertEqual(p.translator_sbuf(0xFFFFFFFC, 8), [None])
         self.assertEqual(p.translator_sbuf(0xFFFFFFFC, 0), [None])
+        self.assertEqual(p.translator_sbuf(0x80000000, 0), [None])
+        self.assertEqual(p.translator_sbuf(0xF0, 0xC), [0xFC])
+        self.assertEqual(p.translator_sbuf(0xF0, 0x10), [None])
 
     def test_expected_and_kernel_lines(self):
         want = p.expected()
         self.assertEqual(list(want.keys()), [r[0] for r in p.ROWS])
         self.assertEqual(want["sload_imm_m4"], [(p.SEED - 4) & 0xFFFFFFFF])
         self.assertEqual(want["sload_x2_soff4_m10"], [(p.SEED - 0xC) & 0xFFFFFFFF, (p.SEED - 8) & 0xFFFFFFFF])
-        self.assertEqual(want["sbuf_soffm4_imm8"], [p.SEED + 4])
+        self.assertEqual(want["sbuf_soffm4_imm8"], [None])
         self.assertEqual(want["sbuf_soffm4"], [None])
 
         lines, order = p.kernel_lines()
         self.assertEqual(len(order), sum(len(r[2]) for r in p.ROWS))
         self.assertEqual(lines[-1], "s_endpgm")
+
+    def test_unsupported_encodings_are_never_run(self):
+        names = {r[0] for r in p.ROWS}
+        lines, _order = p.kernel_lines()
+        self.assertEqual(len(p.UNSUPPORTED), 2)
+        for name, enc, why in p.UNSUPPORTED:
+            with self.subTest(name=name):
+                self.assertNotIn(name, names)
+                self.assertNotIn(name, p.expected())
+                w1 = int(enc[1].split()[1], 16)
+                self.assertTrue(w1 & 0x100000, "an unsupported row is a bit-20 IMM encoding")
+                for word in enc:
+                    self.assertNotIn(word, lines)
+                self.assertIn("gfx1030", why)
+        self.assertFalse([ln for ln in lines if ln.startswith(".long")], "the safe kernel has no hand-encoded words")
 
     def test_translator_mode_prints_every_row(self):
         buf = io.StringIO()
@@ -56,6 +75,8 @@ class SmemNegProbeTest(unittest.TestCase):
         out = buf.getvalue()
         for name, *_ in p.ROWS:
             self.assertIn(name, out)
+        for name, *_ in p.UNSUPPORTED:
+            self.assertIn(f"{name:22} unsupported, not run", out)
 
 
 class OracleLifecycleTest(unittest.TestCase):
@@ -97,6 +118,49 @@ class OracleLifecycleTest(unittest.TestCase):
         self.assertTrue(fake.closed)
         self.assertIn("device: fake-gpu (gfx1036)", out)
         self.assertNotIn("DIFFERS", out)
+        self.assertIn(f"summary: {len(p.ROWS)} match, 0 differ, 0 not written, 2 unsupported (not run)", out)
+        for name, *_ in p.UNSUPPORTED:
+            self.assertIn(f"{name:22} unsupported, not run", out)
+
+    def _fake(self, words):
+        class FakeOracle:
+            device = "fake-gpu"
+            arch = "gfx1030"
+            closed = False
+
+            def run(self, kernels):
+                return [list(words)]
+
+            def close(self):
+                self.closed = True
+        return FakeOracle()
+
+    def test_hw_unwritten_words_are_incomplete_not_a_result(self):
+        flat = self._expected_flat()
+        for label, words in (("all", [runner.SENTINEL] * len(flat)),
+                             ("one", [runner.SENTINEL] + flat[1:]),
+                             ("last", flat[:-1] + [runner.SENTINEL])):
+            with self.subTest(case=label):
+                fake = self._fake(words)
+                rc, out = self._run_hw(fake)
+                self.assertEqual(rc, 2)
+                self.assertTrue(fake.closed)
+                self.assertIn("NOT WRITTEN", out)
+                self.assertIn("incomplete", out)
+                self.assertNotIn(f"summary: {len(p.ROWS)} match", out)
+
+    def test_hw_wrapped_sbuf_answer_is_a_mismatch(self):
+        # The stale rule (32-bit wrap) predicted the dword at +4 for sOFF 0xfffffffc + IMM 8. Hardware reads 0, and
+        # a GPU that returned the wrapped answer must now be reported as differing, not as a match.
+        flat = self._expected_flat()
+        at = sum(len(r[2]) for r in p.ROWS[:[r[0] for r in p.ROWS].index("sbuf_soffm4_imm8")])
+        words = list(flat)
+        words[at] = p.SEED + 4
+        fake = self._fake(words)
+        rc, out = self._run_hw(fake)
+        self.assertEqual(rc, 1)
+        self.assertIn("sbuf_soffm4_imm8", out)
+        self.assertIn("DIFFERS", out)
 
     def test_hw_closes_on_mismatch(self):
         flat = self._expected_flat()

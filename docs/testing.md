@@ -9,6 +9,9 @@ is retained as a historical citation, not as a place to report current results.
 
 This page collects the setup steps and the problems testers have run into so far.
 
+For toolchain pins, offline dependencies and a clean Linux CPU example, see the
+[source-only prerequisites](source_prerequisites.md).
+
 ## What you need
 
 - **Python 3.11+.** `scripts/run_gpu_tests.py` needs at least 3.10.
